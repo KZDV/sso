@@ -1,3 +1,21 @@
+/*
+   ZAU Single Sign-On
+   Copyright (C) 2021  Daniel A. Hawton <daniel@hawton.org>
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU Affero General Public License as published
+   by the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU Affero General Public License for more details.
+
+   You should have received a copy of the GNU Affero General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
 package v1
 
 import (
@@ -7,48 +25,57 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/dhawton/log4g"
 	"github.com/gin-gonic/gin"
-	"github.com/lestrrat-go/jwx/jwa"
-	"github.com/lestrrat-go/jwx/jwk"
-	"github.com/lestrrat-go/jwx/jwt"
+	"github.com/kzdv/sso/database/models"
+	dbTypes "github.com/kzdv/types/database"
 	gonanoid "github.com/matoous/go-nanoid/v2"
-	"gitlab.com/kzdv/sso/database/models"
+	"hawton.dev/log4g"
 )
 
 type Result struct {
-	cid int
+	cid string
 	err error
 }
 
 type UserResponse struct {
-	CID int `json:"cid"`
+	CID      string               `json:"cid"`
+	Personal UserResponsePersonal `json:"personal"`
+}
+
+type UserResponsePersonal struct {
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	FullName  string `json:"full_name"`
+}
+
+type VatsimAccessToken struct {
+	AccessToken string `json:"access_token"`
+}
+
+type VatsimResponse struct {
+	Data UserResponse `json:"data"`
 }
 
 func GetCallback(c *gin.Context) {
-	if _, cancel := c.GetQuery("cancel"); cancel {
-		handleError(c, "Authentication cancelled.")
-		return
-	}
-
-	token, exists := c.GetQuery("token")
-	if !exists || len(token) < 1 {
+	code, exists := c.GetQuery("code")
+	if !exists {
 		handleError(c, "Invalid response received from Authenticator or Authentication cancelled.")
 		return
 	}
 
-	cookie, err := c.Cookie("sso_token")
+	cstate, err := c.Cookie("sso_token")
 	if err != nil {
-		log4g.Category("controllers/callback").Error("Could not parse sso_token cookie, expired? " + err.Error())
-		handleError(c, "Could not parse session cookie. Is it expired?")
+		handleError(c, "Invalid response received from Authenticator or Authentication cancelled.")
 		return
 	}
 
-	login := models.OAuthLogin{}
-	if err = models.DB.Where("token = ? AND created_at < ?", cookie, time.Now().Add(time.Minute*5)).First(&login).Error; err != nil {
-		log4g.Category("controllers/callback").Error("Token used that isn't in db, duplicate request? " + cookie)
+	login := dbTypes.OAuthLogin{}
+	if err = models.DB.Where("token = ? AND created_at < ?", cstate, time.Now().Add(time.Minute*5)).First(&login).Error; err != nil {
+		log4g.Category("controllers/callback").Error("Token used that isn't in db, duplicate request? " + cstate)
 		handleError(c, "Token is invalid.")
 		return
 	}
@@ -59,55 +86,99 @@ func GetCallback(c *gin.Context) {
 		return
 	}
 
+	scheme := "https"
+	returnUri := fmt.Sprintf("%s://%s/oauth/callback", scheme, c.Request.Host)
+
 	result := make(chan Result)
 	go func() {
-		key, _ := jwk.ParseKey([]byte(os.Getenv("VATUSA_ULS_JWK")))
-		_, err := jwt.Parse([]byte(token), jwt.WithVerify(jwa.SignatureAlgorithm(key.Algorithm()), key), jwt.WithValidate(true))
+		tokenUrl := fmt.Sprintf("%s%s", os.Getenv("VATSIM_BASE_URL"), os.Getenv("VATSIM_TOKEN_PATH"))
+
+		data := map[string]interface{}{
+			"grant_type":    "authorization_code",
+			"code":          code,
+			"redirect_uri":  returnUri,
+			"client_id":     atoi(os.Getenv("VATSIM_OAUTH_CLIENT_ID")),
+			"client_secret": os.Getenv("VATSIM_OAUTH_CLIENT_SECRET"),
+			"scopes":        strings.Split(os.Getenv("VATSIM_OAUTH_SCOPES"), " "),
+		}
+
+		json_data, err := json.Marshal(data)
 		if err != nil {
-			log4g.Category("controllers/callback").Error("Error getting token information from VATUSA: " + err.Error())
-			result <- Result{cid: 0, err: err}
+			result <- Result{err: err}
 			return
 		}
-
-		userdata := UserResponse{}
-		req, err := http.NewRequest("GET", fmt.Sprintf("https://login.vatusa.net/uls/v2/info?token=%s", token), bytes.NewBuffer(nil))
-		req.Header.Add("Accept", "application/json")
-
-		client := &http.Client{}
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			for key, val := range via[0].Header {
-				req.Header[key] = val
-			}
-
-			return err
-		}
-		resp, err := client.Do(req)
+		request, err := http.Post(tokenUrl, "application/json", bytes.NewBuffer(json_data))
 		if err != nil {
-			log4g.Category("controllers/callback").Error("Error getting user information from VATUSA: " + err.Error())
-			result <- Result{cid: 0, err: err}
+			result <- Result{err: err}
 			return
 		}
-		defer resp.Body.Close()
-		data, _ := ioutil.ReadAll(resp.Body)
-
-		if err = json.Unmarshal(data, &userdata); err != nil {
-			log4g.Category("controllers/callback").Error("Error unmarshalling user data from VATUSA: " + string(data) + "--" + err.Error())
-			result <- Result{cid: 0, err: err}
+		defer request.Body.Close()
+		body, err := ioutil.ReadAll(request.Body)
+		if err != nil {
+			result <- Result{err: err}
 			return
 		}
 
-		result <- Result{cid: userdata.CID, err: err}
+		if request.StatusCode > 399 {
+			result <- Result{err: fmt.Errorf("error %d received from vatsim: %s", request.StatusCode, string(body))}
+			return
+		}
+
+		accessToken := &VatsimAccessToken{}
+		if err = json.Unmarshal(body, accessToken); err != nil {
+			result <- Result{err: err}
+			return
+		}
+
+		if accessToken.AccessToken == "" {
+			result <- Result{err: fmt.Errorf("no access token received")}
+			return
+		}
+
+		userRequest, err := http.NewRequest("GET", fmt.Sprintf("%s%s", os.Getenv("VATSIM_BASE_URL"), os.Getenv("VATSIM_USER_INFO_PATH")), nil)
+		userRequest.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken.AccessToken))
+		if err != nil {
+			result <- Result{err: err}
+			return
+		}
+
+		userResponse, err := http.DefaultClient.Do(userRequest)
+		if err != nil {
+			result <- Result{err: err}
+			return
+		}
+		defer userResponse.Body.Close()
+
+		userBody, err := ioutil.ReadAll(userResponse.Body)
+		if err != nil {
+			result <- Result{err: err}
+			return
+		}
+
+		if userResponse.StatusCode > 399 {
+			result <- Result{err: fmt.Errorf("error %d received from vatsim: %s", userResponse.StatusCode, string(userBody))}
+			return
+		}
+
+		vatsimResponse := &VatsimResponse{}
+		if err = json.Unmarshal(userBody, vatsimResponse); err != nil {
+			result <- Result{err: err}
+			return
+		}
+
+		result <- Result{cid: vatsimResponse.Data.CID, err: err}
 	}()
 
 	userResult := <-result
 
 	if userResult.err != nil {
-		handleError(c, "Internal Error while getting user data from VATUSA Connect")
+		log4g.Category("controllers/callback").Error("Error getting user from Vatsim: %s", userResult.err.Error())
+		handleError(c, "Internal Error while getting user data from VATSIM Connect")
 		return
 	}
 
-	user := &models.User{}
-	if err = models.DB.First(&user, userResult.cid).Error; err != nil {
+	user := &dbTypes.User{}
+	if err = models.DB.Where(&dbTypes.User{CID: uint(atoi(userResult.cid))}).Find(&user).Error; err != nil {
 		handleError(c, "You are not part of our roster, so you are unable to login.")
 		return
 	}
@@ -117,4 +188,9 @@ func GetCallback(c *gin.Context) {
 	models.DB.Save(&login)
 
 	c.Redirect(302, fmt.Sprintf("%s?code=%s&state=%s", login.RedirectURI, login.Code, login.State))
+}
+
+func atoi(s string) int {
+	i, _ := strconv.Atoi(s)
+	return i
 }

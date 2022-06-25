@@ -1,3 +1,21 @@
+/*
+   ZAU Single Sign-On
+   Copyright (C) 2021  Daniel A. Hawton <daniel@hawton.org>
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU Affero General Public License as published
+   by the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU Affero General Public License for more details.
+
+   You should have received a copy of the GNU Affero General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
 package main
 
 import (
@@ -6,12 +24,15 @@ import (
 	"time"
 
 	"github.com/common-nighthawk/go-figure"
-	"github.com/dhawton/log4g"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/kzdv/sso/database/models"
+	"github.com/kzdv/sso/database/seed"
+	"github.com/kzdv/sso/utils"
+	dbTypes "github.com/kzdv/types/database"
+	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/robfig/cron/v3"
-	"gitlab.com/kzdv/sso/database/models"
-	"gitlab.com/kzdv/sso/database/seed"
+	"hawton.dev/log4g"
 )
 
 var log = log4g.Category("main")
@@ -34,7 +55,7 @@ func main() {
 		}
 	}
 
-	appenv := Getenv("APP_ENV", "dev")
+	appenv := utils.Getenv("APP_ENV", "dev")
 	log.Debug(fmt.Sprintf("APPENV=%s", appenv))
 
 	if appenv == "production" {
@@ -46,21 +67,24 @@ func main() {
 	}
 
 	log.Info("Connecting to database and handling migrations")
-	models.Connect(Getenv("DB_USERNAME", "root"), Getenv("DB_PASSWORD", "secret"), Getenv("DB_HOSTNAME", "localhost"), Getenv("DB_PORT", "3306"), Getenv("DB_DATABASE", "zdv"))
+	models.Connect(utils.Getenv("DB_USERNAME", "root"), utils.Getenv("DB_PASSWORD", "secret"), utils.Getenv("DB_HOST", "localhost"), utils.Getenv("DB_PORT", "3306"), utils.Getenv("DB_DATABASE", "zdv"))
 	seed.CheckSeeds()
 
 	log.Info("Configuring Gin Server")
 	server := NewServer(appenv)
 
+	keyset, _ := jwk.Parse([]byte(os.Getenv("SSO_JWKS")))
+	log.Debug("Loaded %d keys in keyset", keyset.Len())
+
 	log.Info("Configuring scheduled jobs")
 	jobs := cron.New()
-	jobs.AddFunc("@every 5m", func() {
-		if err := models.DB.Where("created_at >= ?", time.Now().Add(time.Minute*30).Unix()).Delete(&models.OAuthLogin{}).Error; err != nil {
+	jobs.AddFunc("@every 1m", func() {
+		if err := models.DB.Where("created_at >= ?", time.Now().Add(time.Minute*30)).Delete(&dbTypes.OAuthLogin{}).Error; err != nil {
 			log4g.Category("job/cleanup").Error(fmt.Sprintf("Error cleaning up old codes: %s", err.Error()))
 		}
 	})
 	jobs.Start()
 
 	log.Info("Done with setup, starting web server...")
-	server.engine.Run(fmt.Sprintf(":%s", Getenv("PORT", "3000")))
+	server.engine.Run(fmt.Sprintf(":%s", utils.Getenv("PORT", "3000")))
 }

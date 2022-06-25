@@ -16,27 +16,32 @@
    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-package seed
+package utils
 
 import (
-	"errors"
-
-	"github.com/kzdv/sso/database/models"
-	dbTypes "github.com/kzdv/types/database"
-	"gorm.io/gorm"
-	"hawton.dev/log4g"
+	"os"
+	"unsafe"
 )
 
-var log = log4g.Category("seed")
-
-func CheckSeeds() {
-	// Check if Ratings should be seeded
-	log.Debug("Checking ratings")
-	var r = dbTypes.Rating{}
-	if err := models.DB.Where("ID = ?", 1).First(&r).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			log.Debug("Check failed for Record Not Found, seeding Ratings")
-			SeedRating()
-		}
+func Getenv(key string, defaultValue string) string {
+	val := os.Getenv(key)
+	if len(val) == 0 {
+		return defaultValue
 	}
+	return val
+}
+
+// StringToBytes converts string to byte slice without a memory allocation.
+func StringToBytes(s string) []byte {
+	return *(*[]byte)(unsafe.Pointer(
+		&struct {
+			string
+			Cap int
+		}{s, len(s)},
+	))
+}
+
+// BytesToString converts byte slice to string without a memory allocation.
+func BytesToString(b []byte) string {
+	return *(*string)(unsafe.Pointer(&b))
 }

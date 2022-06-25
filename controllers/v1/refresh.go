@@ -1,3 +1,21 @@
+/*
+   ZAU Single Sign-On
+   Copyright (C) 2021  Daniel A. Hawton <daniel@hawton.org>
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU Affero General Public License as published
+   by the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU Affero General Public License for more details.
+
+   You should have received a copy of the GNU Affero General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
 package v1
 
 import (
@@ -24,15 +42,14 @@ func GetRefresh(c *gin.Context) {
 			c.JSON(http.StatusUnauthorized, gin.H{"message": "Unauthorized"})
 			return
 		}
-		keyset, _ := jwk.Parse([]byte(os.Getenv("ZDV_JWKS")))
-
+		keyset, _ := jwk.Parse([]byte(os.Getenv("SSO_JWKS")))
 		t, err := jwt.Parse(parts[1], jwt.WithKeySet(keyset))
 		if err != nil {
 			c.JSON(http.StatusForbidden, gin.H{"message": "Forbidden"})
 			return
 		}
 
-		key, _ := keyset.LookupKeyID(os.Getenv("ZDV_CURRENT_KEY"))
+		key, _ := keyset.LookupKeyID(os.Getenv("SSO_CURRENT_KEY"))
 
 		token := jwt.New()
 		token.Set(jwt.IssuerKey, "sso.kzdv.io")

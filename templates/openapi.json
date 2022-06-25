@@ -3,7 +3,7 @@
   "info": {
     "title": "Denver ARTCC OAuth2 Server",
     "version": "1.0.0",
-    "description": "Documentation of the OAuth2 implementation at vZDV.  See RFC 6749 (https://tools.ietf.org/html/rfc6749) and RFC 7636 (https://datatracker.ietf.org/doc/html/rfc7636) for more details."
+    "description": "Documentation of the OAuth2 implementation at KZDV.  See RFC 6749 (https://tools.ietf.org/html/rfc6749) and RFC 7636 (https://datatracker.ietf.org/doc/html/rfc7636) for more details."
   },
   "paths": {
     "/v1/authorize": {
@@ -27,11 +27,12 @@
             "in": "query",
             "required": true,
             "x-is-map": false,
-            "description": "Only supported response_type is token",
+            "description": "Only supported response_type: token, id_token",
             "schema": {
               "type": "string",
               "enum": [
-                "token"
+                "token",
+                "id_token"
               ]
             }
           },
@@ -50,9 +51,12 @@
             "in": "query",
             "required": false,
             "x-is-map": false,
-            "description": "Not used. Will be shared back verbatim if provided.",
+            "description": "Only supported scope is: openid",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "openid"
+              ]
             }
           },
           {

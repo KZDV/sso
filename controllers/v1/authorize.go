@@ -1,16 +1,35 @@
+/*
+   ZAU Single Sign-On
+   Copyright (C) 2021  Daniel A. Hawton <daniel@hawton.org>
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU Affero General Public License as published
+   by the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU Affero General Public License for more details.
+
+   You should have received a copy of the GNU Affero General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
 package v1
 
 import (
 	"fmt"
-	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
-	"github.com/dhawton/log4g"
 	"github.com/gin-gonic/gin"
+	"github.com/kzdv/sso/database/models"
+	dbTypes "github.com/kzdv/types/database"
 	gonanoid "github.com/matoous/go-nanoid/v2"
-	"gitlab.com/kzdv/sso/database/models"
+	"hawton.dev/log4g"
 )
 
 type AuthorizeRequest struct {
@@ -30,25 +49,25 @@ func GetAuthorize(c *gin.Context) {
 		return
 	}
 
-	client := models.OAuthClient{}
+	client := dbTypes.OAuthClient{}
 	if err := models.DB.Where("client_id = ?", req.ClientId).First(&client).Error; err != nil {
 		handleError(c, "Invalid Client ID Received.")
 		return
 	}
 
-	if !client.ValidURI(req.RedirectURI) {
+	if ok, _ := client.ValidURI(req.RedirectURI); !ok {
 		log4g.Category("controllers/authorize").Error("Unauthorized redirect uri received from client " + client.ClientId + ", " + req.RedirectURI)
 		handleError(c, "The Return URI was not authorized.")
 		return
 	}
 
-	if req.ResponseType != "token" {
+	if req.ResponseType != "code" {
 		log4g.Category("controllers/authorize").Error("Invalid response type received from client " + client.ClientId + ", " + req.ResponseType)
 		handleError(c, "Unsupported response type received.")
 		return
 	}
 
-	if req.CodeChallengeMethod != "S256" {
+	if req.CodeChallengeMethod != "" && req.CodeChallengeMethod != "S256" {
 		log4g.Category("controllers/authorize").Error("Invalid code challenge method received from client " + client.ClientId + ", " + req.CodeChallengeMethod)
 		handleError(c, "Unsupported Code Challenge Method defined.")
 		return
@@ -61,7 +80,7 @@ func GetAuthorize(c *gin.Context) {
 		return
 	}
 
-	login := models.OAuthLogin{
+	login := dbTypes.OAuthLogin{
 		Token:               token,
 		UserAgent:           c.Request.UserAgent(),
 		RedirectURI:         req.RedirectURI,
@@ -79,26 +98,26 @@ func GetAuthorize(c *gin.Context) {
 		return
 	}
 
-	/*	Leave this here, hopefully ULSv3 lets us send the return url instead of an ID #
-
-		scheme := "http"
-		if c.Request.TLS != nil && c.Request.TLS.HandshakeComplete {
-			scheme = "https"
-		}
-		returnUri := url.QueryEscape(fmt.Sprintf("%s://%s/v1/return", scheme, c.Request.Host)) */
-
-	host, _, _ := net.SplitHostPort(c.Request.Host)
-	if host == "" {
-		host = c.Request.Host
-	}
-	log4g.Category("test").Debug(host)
-	c.SetCookie("sso_token", login.Token, int(time.Minute)*5, "/", host, false, true)
-
-	redirect_url := fmt.Sprintf("https://login.vatusa.net/uls/v2/login?fac=ZDV&url=%s&rfc7519_compliance", os.Getenv("VATUSA_ULS_REDIRECT_ID"))
-
+	scheme := "https"
+	returnUri := url.QueryEscape(fmt.Sprintf("%s://%s/oauth/callback", scheme, c.Request.Host))
 	/*
-		redirect_uri := url.QueryEscape(os.Getenv("VATSIM_REDIRECT_URI"))
-		vatsim_url := fmt.Sprintf("https://auth.vatsim.net/oauth/authorize?client_id=%s&redirect_uri=%s&scope=%s&response_type=code", os.Getenv("VATSIM_OAUTH_CLIENT_ID"), redirect_uri, url.QueryEscape("full_name email vatsim_details country"))
-	*/
-	c.Redirect(http.StatusTemporaryRedirect, redirect_url)
+		host, _, _ := net.SplitHostPort(c.Request.Host)
+		if host == "" {
+			host = c.Request.Host
+		}
+		log4g.Category("test").Debug(host) */
+	c.SetCookie("sso_token", login.Token, int(time.Minute)*5, "/", c.Request.Host, false, true)
+
+	//redirect_url := fmt.Sprintf("https://login.vatusa.net/uls/v2/login?fac=%s&url=%s&rfc7519_compliance", utils.Getenv("ULS_FACILITY_ID", "ZAU"), utils.Getenv("ULS_REDIRECT_ID", "1"))
+
+	//		redirect_uri := url.QueryEscape(os.Getenv("VATSIM_REDIRECT_URI"))
+	vatsim_url := fmt.Sprintf("%s%s?client_id=%s&redirect_uri=%s&scope=%s&response_type=code",
+		os.Getenv("VATSIM_BASE_URL"),
+		os.Getenv("VATSIM_AUTHORIZE_PATH"),
+		os.Getenv("VATSIM_OAUTH_CLIENT_ID"),
+		returnUri,
+		url.QueryEscape(os.Getenv("VATSIM_OAUTH_SCOPES")),
+	)
+
+	c.Redirect(http.StatusTemporaryRedirect, vatsim_url)
 }
