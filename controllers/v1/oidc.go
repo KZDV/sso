@@ -34,10 +34,10 @@ func GetOIDCConfig(c *gin.Context) {
 		GrantTypesSupported:    []string{"authorization_code"},
 		ResponseTypesSupported: []string{"code"},
 		IdTokenSigningAlgValuesSupported: []string{
-			"ES384", "RS384", "EdDSA",
+			"RS256", "ES384", "RS384", "EdDSA",
 		},
 		TokenEndpointAuthSigningAlgValuesSupported: []string{
-			"ES384", "RS384", "EdDSA",
+			"RS256", "ES384", "RS384", "EdDSA",
 		},
 		CodeChallengeMethodsSupported: []string{"none", "S256"},
 		RequestParameterSupported:     true,
