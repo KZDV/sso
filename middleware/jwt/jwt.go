@@ -25,8 +25,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	dbTypes "github.com/kzdv/api/pkg/database/types"
 	"github.com/kzdv/sso/database/models"
-	dbTypes "github.com/kzdv/types/database"
 	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/lestrrat-go/jwx/jwt"
 	"gorm.io/gorm/clause"

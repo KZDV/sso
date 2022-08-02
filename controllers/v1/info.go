@@ -22,7 +22,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	dbTypes "github.com/kzdv/types/database"
+	dbTypes "github.com/kzdv/api/pkg/database/types"
 )
 
 func GetInfo(c *gin.Context) {

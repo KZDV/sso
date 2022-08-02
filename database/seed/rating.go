@@ -21,8 +21,8 @@ package seed
 import (
 	"encoding/json"
 
+	dbTypes "github.com/kzdv/api/pkg/database/types"
 	"github.com/kzdv/sso/database/models"
-	dbTypes "github.com/kzdv/types/database"
 	"gorm.io/gorm/clause"
 	"hawton.dev/log4g"
 )

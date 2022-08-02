@@ -31,8 +31,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	dbTypes "github.com/kzdv/api/pkg/database/types"
 	"github.com/kzdv/sso/database/models"
-	dbTypes "github.com/kzdv/types/database"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"gorm.io/gorm"
 	"hawton.dev/log4g"

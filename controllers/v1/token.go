@@ -22,25 +22,21 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"math/rand"
 	"net/http"
-	"os"
-	"time"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	dbTypes "github.com/kzdv/api/pkg/database/types"
 	"github.com/kzdv/sso/database/models"
+	loginpkg "github.com/kzdv/sso/pkg/login"
+	"github.com/kzdv/sso/pkg/tokens"
 	utils "github.com/kzdv/sso/pkg/utils"
-	dbTypes "github.com/kzdv/types/database"
-	"github.com/lestrrat-go/jwx/jwa"
-	"github.com/lestrrat-go/jwx/jwk"
-	"github.com/lestrrat-go/jwx/jwt"
-	"gorm.io/gorm/clause"
 	"hawton.dev/log4g"
 )
 
 type TokenRequest struct {
 	GrantType    string   `form:"grant_type"`
-	ClientId     string   `form:"client_id"`
+	ClientID     string   `form:"client_id"`
 	ClientSecret string   `form:"client_secret"`
 	Code         string   `form:"code"`
 	RedirectURI  string   `form:"redirect_uri"`
@@ -54,12 +50,13 @@ type TokenResponse struct {
 	ExpiresIn           int    `json:"expires_in"`
 	TokenType           string `json:"token_type"`
 	IdToken             string `json:"id_token"`
+	RefreshToken        string `json:"refresh_token"`
 	CodeChallenge       string `json:"code_challenge"`
 	CodeChallengeMethod string `json:"code_challenge_method"`
 }
 
 func PostToken(c *gin.Context) {
-	treq := TokenRequest{}
+	treq := loginpkg.TokenRequest{}
 	if err := c.ShouldBind(&treq); err != nil {
 		log4g.Category("controllers/token").Error("Invalid request, missing field(s)")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
@@ -81,7 +78,7 @@ func PostToken(c *gin.Context) {
 
 	defer models.DB.Delete(&login)
 
-	if treq.ClientId == "" || treq.ClientSecret == "" {
+	if treq.ClientID == "" || treq.ClientSecret == "" {
 		// Not in query string, let's grab from Authorization header
 		auth := c.Request.Header.Get("Authorization")
 		if auth == "" {
@@ -90,15 +87,15 @@ func PostToken(c *gin.Context) {
 			return
 		}
 
-		if fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", login.Client.ClientId, login.Client.ClientSecret)))) != auth {
+		if fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", login.Client.ClientID, login.Client.ClientSecret)))) != auth {
 			log4g.Category("controllers/token").Error("Invalid client: creds did not match.")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_client"})
 			return
 		}
 	}
 
-	if treq.ClientId != login.Client.ClientId || treq.ClientSecret != login.Client.ClientSecret {
-		log4g.Category("controllers/token").Error(fmt.Sprintf("Invalid client: %s does not match %s", treq.ClientId, login.Client.ClientId))
+	if treq.ClientID != login.Client.ClientID || treq.ClientSecret != login.Client.ClientSecret {
+		log4g.Category("controllers/token").Error(fmt.Sprintf("Invalid client: %s does not match %s", treq.ClientID, login.Client.ClientID))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_client"})
 		return
 	}
@@ -109,35 +106,29 @@ func PostToken(c *gin.Context) {
 			log4g.Category("controllers/token").Error("Code Challenge failed")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_grant"})
 			return
+		} else {
+			auth := strings.Split(c.GetHeader("Authorization"), " ")[1]
+			authBytes, err := base64.URLEncoding.DecodeString(auth)
+			if err != nil {
+				log4g.Category("controllers/token").Error("Failed base64 decoding %s %s", c.GetHeader("Authorization"), err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+				return
+			}
+			authslice := strings.SplitN(string(authBytes), ":", 2)
+			treq.ClientID = authslice[0]
+			treq.ClientSecret = authslice[1]
 		}
 	}
 
-	user := dbTypes.User{}
-	if err := models.DB.Preload(clause.Associations).Where(dbTypes.User{CID: login.CID}).Find(&user).Error; err != nil {
-		log4g.Category("controllers/token").Error("User %s not found", login.CID)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
-		return
-	}
-
-	keyset, err := jwk.Parse([]byte(os.Getenv("SSO_JWKS")))
+	l, user, err := loginpkg.HandleGrantType(treq)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal Server Error"})
-		log4g.Category("controller/token").Error("Could not parse JWKs: %s", err.Error())
+		log4g.Category("controllers/token").Error(err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	rand.Seed(time.Now().Unix())
-	i := rand.Intn(keyset.Len())
-	key, ok := keyset.Get(i)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal Server Error"})
-		log4g.Category("controllers/token").Error("Could not find current key in JWKs")
-		return
-	}
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal Server Error"})
-		log4g.Category("controllers/token").Error("Could not find current key in JWKs")
-		return
+	if len(treq.Scope) == 0 {
+		treq.Scope = strings.Split(l.Scope, " ")
 	}
 
 	var roles []string
@@ -145,46 +136,60 @@ func PostToken(c *gin.Context) {
 		roles = append(roles, role.Name)
 	}
 
-	token := jwt.New()
-	token.Set(jwt.IssuerKey, utils.Getenv("SSO_ISSUERKEY", "auth.denartcc.org"))
-	token.Set(jwt.AudienceKey, login.Client.Name)
-	token.Set(jwt.SubjectKey, fmt.Sprint(login.CID))
-	token.Set(jwt.IssuedAtKey, time.Now())
-	token.Set(jwt.ExpirationKey, time.Now().Add(time.Duration(login.Client.TTL)*time.Second).Unix())
-	token.Set("roles", roles)
-	signed, err := jwt.Sign(token, jwa.SignatureAlgorithm(key.Algorithm()), key)
+	ret := TokenResponse{
+		TokenType: "bearer",
+		ExpiresIn: l.Client.TTL,
+	}
+	if l != nil {
+		ret.CodeChallenge = l.CodeChallenge
+		ret.CodeChallengeMethod = l.CodeChallengeMethod
+	}
+
+	accessToken, err := tokens.CreateToken(
+		utils.Getenv("SSO_ISSUERKEY", "auth.denartcc.org"),
+		l.Client.Name,
+		fmt.Sprint(l.CID),
+		l.Client.TTL,
+		map[string]interface{}{
+			"roles": roles,
+		},
+	)
 	if err != nil {
-		log4g.Category("controllers/token").Error("Failed to create JWT: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_grant"})
+		log4g.Category("controllers/token").Error("Error creating access token: %s", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	ret.AccessToken = string(accessToken)
 
-	ret := TokenResponse{
-		AccessToken:         string(signed),
-		ExpiresIn:           int(time.Hour*24*7) / int(time.Second),
-		TokenType:           "Bearer",
-		CodeChallenge:       login.CodeChallenge,
-		CodeChallengeMethod: login.CodeChallengeMethod,
-	}
-
-	if contains(treq.Scope, "openid") && treq.ResponseType == "id_token" {
-		token := jwt.New()
-		token.Set(jwt.IssuerKey, utils.Getenv("SSO_ISSUERKEY", "auth.denartcc.org"))
-		token.Set(jwt.AudienceKey, login.Client.Name)
-		token.Set(jwt.SubjectKey, fmt.Sprint(login.CID))
-		token.Set(jwt.IssuedAtKey, time.Now())
-		token.Set(jwt.ExpirationKey, time.Now().Add(time.Duration(login.Client.TTL)*time.Second).Unix())
-		token.Set("name", fmt.Sprintf("%s %s", user.FirstName, user.LastName))
-		token.Set("given_name", user.FirstName)
-		token.Set("family_name", user.LastName)
-		token.Set("roles", roles)
-		idsigned, err := jwt.Sign(token, jwa.SignatureAlgorithm(key.Algorithm()), key)
+	if contains(treq.Scope, "openid") {
+		idtoken, err := tokens.CreateToken(
+			utils.Getenv("SSO_ISSUERKEY", "auth.denartcc.org"),
+			l.Client.Name,
+			fmt.Sprint(l.CID),
+			l.Client.TTL,
+			map[string]interface{}{
+				"name":        fmt.Sprintf("%s %s", user.FirstName, user.LastName),
+				"given_name":  user.FirstName,
+				"family_name": user.LastName,
+				"email":       user.Email,
+				"roles":       roles,
+				"nonce":       l.Nonce,
+			},
+		)
 		if err != nil {
-			log4g.Category("controllers/token").Error("Failed to create JWT: " + err.Error())
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_grant"})
+			log4g.Category("controllers/token").Error("Error creating id token: %s", err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		ret.IdToken = string(idsigned)
+		ret.IdToken = string(idtoken)
+	}
+	ret.RefreshToken, err = loginpkg.CreateRefreshToken(l, user)
+
+	_, err = loginpkg.CleanupAuthorization(treq)
+	if err != nil {
+		log4g.Category("controllers/token").Error("Error cleaning up authorization: %s", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
 	c.JSON(http.StatusOK, ret)

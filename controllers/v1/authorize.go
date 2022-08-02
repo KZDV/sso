@@ -26,14 +26,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	dbTypes "github.com/kzdv/api/pkg/database/types"
 	"github.com/kzdv/sso/database/models"
-	dbTypes "github.com/kzdv/types/database"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"hawton.dev/log4g"
 )
 
 type AuthorizeRequest struct {
-	ClientId            string `form:"client_id"`
+	ClientID            string `form:"client_id"`
 	RedirectURI         string `form:"redirect_uri"`
 	ResponseType        string `form:"response_type"`
 	Scope               string `form:"scope" validation:"-"`
@@ -50,25 +50,25 @@ func GetAuthorize(c *gin.Context) {
 	}
 
 	client := dbTypes.OAuthClient{}
-	if err := models.DB.Where("client_id = ?", req.ClientId).First(&client).Error; err != nil {
+	if err := models.DB.Where("client_id = ?", req.ClientID).First(&client).Error; err != nil {
 		handleError(c, "Invalid Client ID Received.")
 		return
 	}
 
 	if ok, _ := client.ValidURI(req.RedirectURI); !ok {
-		log4g.Category("controllers/authorize").Error("Unauthorized redirect uri received from client " + client.ClientId + ", " + req.RedirectURI)
+		log4g.Category("controllers/authorize").Error("Unauthorized redirect uri received from client " + client.ClientID + ", " + req.RedirectURI)
 		handleError(c, "The Return URI was not authorized.")
 		return
 	}
 
 	if req.ResponseType != "code" {
-		log4g.Category("controllers/authorize").Error("Invalid response type received from client " + client.ClientId + ", " + req.ResponseType)
+		log4g.Category("controllers/authorize").Error("Invalid response type received from client " + client.ClientID + ", " + req.ResponseType)
 		handleError(c, "Unsupported response type received.")
 		return
 	}
 
 	if req.CodeChallengeMethod != "" && req.CodeChallengeMethod != "S256" {
-		log4g.Category("controllers/authorize").Error("Invalid code challenge method received from client " + client.ClientId + ", " + req.CodeChallengeMethod)
+		log4g.Category("controllers/authorize").Error("Invalid code challenge method received from client " + client.ClientID + ", " + req.CodeChallengeMethod)
 		handleError(c, "Unsupported Code Challenge Method defined.")
 		return
 	}
@@ -82,7 +82,9 @@ func GetAuthorize(c *gin.Context) {
 
 	login := dbTypes.OAuthLogin{
 		Token:               token,
+		Nonce:               c.Param("nonce"),
 		UserAgent:           c.Request.UserAgent(),
+		IP:                  c.ClientIP(),
 		RedirectURI:         req.RedirectURI,
 		Client:              client,
 		ClientID:            client.ID,
@@ -90,6 +92,7 @@ func GetAuthorize(c *gin.Context) {
 		CodeChallenge:       req.CodeChallenge,
 		CodeChallengeMethod: req.CodeChallengeMethod,
 		Scope:               req.Scope,
+		ExpiresAt:           time.Now().Add(time.Minute * 5),
 	}
 
 	if err = models.DB.Create(&login).Error; err != nil {

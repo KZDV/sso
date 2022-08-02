@@ -21,16 +21,15 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/common-nighthawk/go-figure"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	dbTypes "github.com/kzdv/api/pkg/database/types"
 	"github.com/kzdv/sso/database/models"
 	"github.com/kzdv/sso/database/seed"
+	"github.com/kzdv/sso/pkg/tokens"
 	"github.com/kzdv/sso/utils"
-	dbTypes "github.com/kzdv/types/database"
-	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/robfig/cron/v3"
 	"hawton.dev/log4g"
 )
@@ -73,14 +72,20 @@ func main() {
 	log.Info("Configuring Gin Server")
 	server := NewServer(appenv)
 
-	keyset, _ := jwk.Parse([]byte(os.Getenv("SSO_JWKS")))
-	log.Debug("Loaded %d keys in keyset", keyset.Len())
+	err := tokens.BuildKeyset(utils.Getenv("SSO_JWKS", ""))
+	if err != nil {
+		log.Error("Error building keyset: " + err.Error())
+	}
+	log.Info("Built JWKS with %d keys", tokens.KeySet.Len())
 
 	log.Info("Configuring scheduled jobs")
 	jobs := cron.New()
 	jobs.AddFunc("@every 1m", func() {
-		if err := models.DB.Where("created_at >= ?", time.Now().Add(time.Minute*30)).Delete(&dbTypes.OAuthLogin{}).Error; err != nil {
+		if err := models.DB.Where("code <> '' and now() >= date_add(created_at, interval 30 minute)").Delete(&dbTypes.OAuthLogin{}).Error; err != nil {
 			log4g.Category("job/cleanup").Error(fmt.Sprintf("Error cleaning up old codes: %s", err.Error()))
+		}
+		if err := models.DB.Where("now() >= expires_at").Delete(&dbTypes.OAuthLogin{}).Error; err != nil {
+			log4g.Category("job/cleanup").Error(fmt.Sprintf("Error cleaning up expired codes: %s", err.Error()))
 		}
 	})
 	jobs.Start()
