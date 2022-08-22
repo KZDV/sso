@@ -92,9 +92,7 @@ func PostToken(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_client"})
 			return
 		}
-	}
-
-	if treq.ClientID != login.Client.ClientID || treq.ClientSecret != login.Client.ClientSecret {
+	} else if treq.ClientID != login.Client.ClientID || treq.ClientSecret != login.Client.ClientSecret {
 		log4g.Category("controllers/token").Error(fmt.Sprintf("Invalid client: %s does not match %s", treq.ClientID, login.Client.ClientID))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_client"})
 		return
