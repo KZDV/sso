@@ -30,7 +30,7 @@ import (
 	"github.com/kzdv/sso/database/models"
 	loginpkg "github.com/kzdv/sso/pkg/login"
 	"github.com/kzdv/sso/pkg/tokens"
-	utils "github.com/kzdv/sso/pkg/utils"
+	"github.com/kzdv/sso/pkg/utils"
 	"hawton.dev/log4g"
 )
 
@@ -71,7 +71,7 @@ func PostToken(c *gin.Context) {
 
 	login := dbTypes.OAuthLogin{}
 	if err := models.DB.Joins("Client").Where("code = ?", treq.Code).First(&login).Error; err != nil {
-		log4g.Category("controllers/token").Error(fmt.Sprintf("Code %s not found", treq.Code))
+		log4g.Category("controllers/token").Warning(fmt.Sprintf("Code %s not found", treq.Code))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
@@ -92,6 +92,17 @@ func PostToken(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_client"})
 			return
 		}
+
+		authstring := strings.Replace(auth, "Basic ", "", 1)
+		authbytes, err := base64.StdEncoding.DecodeString(authstring)
+		if err != nil {
+			log4g.Category("controllers/token").Error("Invalid client: base64 decode failed: %+v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_client"})
+			return
+		}
+		authslice := strings.SplitN(string(authbytes), ":", 2)
+		treq.ClientID = authslice[0]
+		treq.ClientSecret = authslice[1]
 	} else if treq.ClientID != login.Client.ClientID || treq.ClientSecret != login.Client.ClientSecret {
 		log4g.Category("controllers/token").Error(fmt.Sprintf("Invalid client: %s does not match %s", treq.ClientID, login.Client.ClientID))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_client"})

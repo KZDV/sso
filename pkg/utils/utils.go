@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/json"
 	"os"
 	"unsafe"
 )
@@ -28,4 +29,13 @@ func StringToBytes(s string) []byte {
 // BytesToString converts byte slice to string without a memory allocation.
 func BytesToString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
+}
+
+func DumpJSON[T any](data T) string {
+	ret, err := json.Marshal(data)
+	if err != nil {
+		return ""
+	}
+
+	return string(ret)
 }
